@@ -2,16 +2,31 @@
 #include <fcntl.h>
 #include "jojo.h"
 
-#define DSIZ 1024
+#define DSIZE 1024
 
 using namespace std;
+
+struct sk {
+	int ifd;
+	int ofd;
+	int status; //1=reading, 2=pending,3=finished
+	uint8_t buf[DSIZE]; //for buffer data
+};
+
+void dispatcher(fd_set readfds, fd_set writefds, std::list<struct sk *> sklist){
+
+}
+
+void pRoutine(){
+
+}
 
 int main(int argc, char** argv){
 	int ifd, ofd;
 	int ntowrite;
 	int maxfds1;
 	fd_set readfds, writefds;
-	uint8_t buf[DSIZ];
+	uint8_t buf[DSIZE];
 	bool isEnd = false;
 	bool lastOne = false;
 
