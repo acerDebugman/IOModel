@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include "jojo.h"
 
-#define DSIZE 1024
+#define DSIZE BUFSIZ
 
 using namespace std;
 
@@ -28,12 +28,9 @@ struct sk {
 	bool lastone;
 	pthread_mutex_t rd_lock;
 	pthread_mutex_t wr_lock;
-	//more info
-	uint8_t iFileName[50];
-	uint8_t oFileName[50];
 	//total: readfds, writefds
-	fd_set *preadfds;
-	fd_set *pwritefds;
+	fd_set *pbkReadfds;
+	fd_set *pbkWritefds;
 };
 
 /**
@@ -47,18 +44,18 @@ void * thrRoutine(void*arg){
 	if(skevents::readEnt == psk->event && skstatus::reading == psk->status){
 		if((psk->ntowrite = read(psk->ifd, psk->buf, sizeof(psk->buf))) < 0)
 			JojoUtil::err_sys("read error in thread!");
-		fprintf(stderr, "read %d bytes from file: %d\n", psk->ntowrite, psk->ifd);
+//		fprintf(stderr, "read %d bytes from file: %d\n", psk->ntowrite, psk->ifd);
 
 		if(psk->ntowrite < sizeof(psk->buf)){
 			psk->lastone = true;
 			//XXX close file, can't put it here! //select function will select it again!
 //			close(psk->ifd);
 		}
-		FD_SET(psk->ofd, psk->pwritefds);
+		FD_SET(psk->ofd, psk->pbkWritefds);
 
 		psk->status = skstatus::pending;
 
-		fprintf(stderr, "end of thread! event=read event\n");
+//		fprintf(stderr, "end of thread! event=read event\n");
 	}
 	pthread_mutex_unlock(&psk->rd_lock);
 
@@ -68,7 +65,7 @@ void * thrRoutine(void*arg){
 		int n = 0;
 		if((n = write(psk->ofd, psk->buf, psk->ntowrite)) < 0)
 			JojoUtil::err_sys("write error in thread!");
-		fprintf(stderr, "write %d bytes to file: %d\n", n, psk->ofd);
+//		fprintf(stderr, "write %d bytes to file: %d\n", n, psk->ofd);
 
 		//default set status to read
 		psk->status = skstatus::reading;
@@ -81,9 +78,9 @@ void * thrRoutine(void*arg){
 
 		//go to read more data!!
 		if(skstatus::reading == psk->status)
-			FD_SET(psk->ifd, psk->preadfds);
+			FD_SET(psk->ifd, psk->pbkReadfds);
 
-		fprintf(stderr, "end of thread! event=write event\n");
+//		fprintf(stderr, "end of thread! event=write event\n");
 	}
 	pthread_mutex_unlock(&psk->wr_lock);
 
@@ -98,24 +95,32 @@ void dispatcher(fd_set &cpReadfds, fd_set &cpWritefds, std::list<struct sk *> &s
 	//1. tell read
 	for(auto &psk : sklist){
 		//XXX we can create another two threads handling these events
-		if(FD_ISSET(psk->ifd, &cpReadfds)){
+//		pthread_mutex_lock(&psk->rd_lock);
 //		if(FD_ISSET(psk->ifd, &cpReadfds) && skstatus::reading == psk->status){
+		if(FD_ISSET(psk->ifd, &cpReadfds)){
+//			FD_CLR(psk->ifd, &cpReadfds); //this won't control concurrent, 'cause we cpReadfds is different copy after each select return
+			FD_CLR(psk->ifd, psk->pbkReadfds);
 			psk->event = skevents::readEnt;
 			if(pthread_create(&ntid, NULL, thrRoutine, (void*)psk) != 0)
 				JojoUtil::err_sys("can't create thread!");
 
-			fprintf(stderr, "create rd event thread : %lu\n", (uint64_t)ntid);
+//			fprintf(stderr, "create rd event thread : %lu\n", (uint64_t)ntid);
 		}
+//		pthread_mutex_unlock(&psk->rd_lock);
 
 		//need tell if there data need to write here
+//		pthread_mutex_lock(&psk->wr_lock);
 		if(FD_ISSET(psk->ofd, &cpWritefds)){
+//			FD_CLR(psk->ofd, &cpWritefds); //same as above
+			FD_CLR(psk->ofd, psk->pbkWritefds);
 //		if(FD_ISSET(psk->ofd, &cpWritefds) && skstatus::pending == psk->status){
 			psk->event = skevents::writeEnt;
 			if(pthread_create(&ntid, NULL, thrRoutine, (void*)psk) != 0)
 				JojoUtil::err_sys("can't create thread!");
 
-			fprintf(stderr, "create wr event thread : %lu\n", (uint64_t)ntid);
+//			fprintf(stderr, "create wr event thread : %lu\n", (uint64_t)ntid);
 		}
+//		pthread_mutex_unlock(&psk->wr_lock);
 
 		//need register, don't forget //can't do it here!! need do it after I/O operation
 //		FD_SET(psk->ifd, &readfds);
@@ -143,8 +148,8 @@ void initsk(struct sk *psk, int &ifd, int &ofd, fd_set &readfds, fd_set &writefd
 	psk->event = skevents::initEnt;
 	psk->ntowrite = 0;
 	psk->lastone = false;
-	psk->preadfds = &readfds;
-	psk->pwritefds = &writefds;
+	psk->pbkReadfds = &readfds;
+	psk->pbkWritefds = &writefds;
 }
 
 int main(int argc, char** argv){
@@ -153,6 +158,8 @@ int main(int argc, char** argv){
 	char fname[20];
 	int ifd, ofd, maxfd;
 	list<struct sk*> sklist;
+	fd_set backup_read;
+	fd_set backup_write;
 
 	if(argc < 2)
 		JojoUtil::err_exit(1, "usage: a.out fromfile1 fromfile2 [fromfileN]");
@@ -165,7 +172,7 @@ int main(int argc, char** argv){
 		if((ifd = open(argv[i], O_RDONLY)) < 0)
 			JojoUtil::err_sys("open file error!");
 
-		fprintf(stderr, "open file: %s, fd=%d\n", argv[i], ifd);
+//		fprintf(stderr, "open file: %s, fd=%d\n", argv[i], ifd);
 
 		sprintf(fname, "tofile%d.txt", i);
 		if((ofd = creat(fname, FILE_MODE)) < 0)
@@ -175,7 +182,7 @@ int main(int argc, char** argv){
 
 		//init struct sk
 		struct sk * psk = newsk();
-		initsk(psk, ifd, ofd, readfds, writefds);
+		initsk(psk, ifd, ofd, backup_read, backup_write);
 		sklist.push_front(psk);
 		//register
 		FD_SET(ifd, &readfds);
@@ -183,38 +190,37 @@ int main(int argc, char** argv){
 		maxfd = ofd > ifd ? ofd : ifd;
 	}
 	//do the IO Multiplexing job
-	fd_set backup_read = readfds;
-	fd_set backup_write = writefds;
-	timeval wait_time;
 
+	timeval wait_time;
+	int selectRet = 0;
+
+	uint64_t begin_micro = JojoUtil::nowMicros();
 	while(!isEnd){
+		//NB: timeval will be reset after select return
 		wait_time.tv_sec = 0;
 		wait_time.tv_usec = 1000;
-		if(select(maxfd + 1, &readfds, &writefds, NULL, &wait_time) < 0)
+		if((selectRet = select(maxfd + 1, &readfds, &writefds, NULL, &wait_time)) < 0)
 			JojoUtil::err_sys("select function error!");
 		fd_set tmp_reads = readfds;
 		fd_set tmp_write = writefds;
-//		readfds = backup_read;
-//		writefds = backup_write;
-//		FD_ZERO(&readfds);
-//		FD_ZERO(&writefds);
-
-		//recover
+		if(0 == selectRet){
+			readfds = backup_read;
+			writefds = backup_write;
+		}else{
+			FD_ZERO(&readfds);
+			FD_ZERO(&writefds);
+		}
+		//dispatch IO request
 		dispatcher(tmp_reads, tmp_write, sklist);
-
-		//approach 1
-//		sleep(1);
-
 		//check if all done
 		for(auto &x : sklist){
 			if(x->status != skstatus::finished)
 				break;
-
 			isEnd = true;
 		}
 	}
+	uint64_t end_micro = JojoUtil::nowMicros();
+	fprintf(stderr, "\ntime total cost: %u, block-size:%u\n", (unsigned int)(end_micro - begin_micro), DSIZE);
 
-	//wait for other thread!
-	sleep(1);
 	return 0;
 }
