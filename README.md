@@ -9,3 +9,5 @@ socket directory contains all network I/O model operations
 
 compile example:
 g++ nonBlockingIO.cc jojo.h -o a.out
+
+g++ -std=c++11 IOMultiplexing2.cc jojo.h jojoutil.cc -lpthread -o imo2.o
